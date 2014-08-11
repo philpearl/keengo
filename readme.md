@@ -1,6 +1,6 @@
 #keengo
 
-Send events to [Keen.io](http://keen.io) asynchronously in batches.
+Send events to [Keen.io](https://keen.io) asynchronously in batches.
 
 Includes middleware for [Goji](https://github.com/zenazn/goji) to track HTTP requests and responses.
 
