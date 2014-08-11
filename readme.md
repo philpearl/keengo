@@ -1,0 +1,1 @@
+Send and batch events to Keen.io using a background goroutine.  Includes middleware for Goji to track HTTP requests and responses.
