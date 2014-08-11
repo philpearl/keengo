@@ -20,6 +20,7 @@ const (
 	send_threshold int = 90
 )
 
+// Type for queuing events to the background
 type analyticsEvent struct {
 	eventCollection string
 	data            interface{}
@@ -28,10 +29,11 @@ type analyticsEvent struct {
 type Sender struct {
 	projectId string
 	writeKey  string
-	url       string
-	events    map[string][]interface{}
-	count     int
-	channel   chan analyticsEvent
+	url       string                   // The url to post events too, including project details
+	events    map[string][]interface{} // For batching events as we pull them off the channel
+	count     int                      // Number of events batched and ready to send
+	channel   chan analyticsEvent      // For queuing events to the background
+	done      chan bool                // For clean exiting
 }
 
 /*
@@ -40,15 +42,16 @@ Create a new Sender.
 This creates a background goroutine to aggregate and send your events.
 */
 func NewSender(projectId, writeKey string) *Sender {
-	ae := &Sender{
+	sender := &Sender{
 		projectId: projectId,
 		writeKey:  writeKey,
 		channel:   make(chan analyticsEvent, channel_size),
+		done:      make(chan bool),
 	}
-	ae.url = url + ae.projectId + "/events?api_key=" + ae.writeKey
-	ae.reset()
-	go ae.run()
-	return ae
+	sender.url = url + sender.projectId + "/events?api_key=" + sender.writeKey
+	sender.reset()
+	go sender.run()
+	return sender
 }
 
 /*
@@ -59,40 +62,58 @@ background routine will send everything that's queued to it in a batch, then wai
 
 The upshot is that if you send events slowly they will be sent immediately and individually, but if you send events quickly they will be batched
 */
-func (ae *Sender) Queue(eventCollection string, info interface{}) {
-	ae.channel <- analyticsEvent{eventCollection, info}
+func (sender *Sender) Queue(eventCollection string, info interface{}) {
+	sender.channel <- analyticsEvent{eventCollection, info}
 }
 
-func (ae *Sender) add(event analyticsEvent) {
-	ae.events[event.eventCollection] = append(ae.events[event.eventCollection], event.data)
-	ae.count++
+/*
+Close the sender and wait for queued events to be sent
+*/
+func (sender *Sender) Close() {
+	// Closing the channel signals the background thread to exit
+	close(sender.channel)
+	// Wait for the background thread to signal it has flushed all events and exited
+	<-sender.done
+}
 
-	if ae.count > send_threshold {
-		ae.send()
+// Add an event to the map that's used to batch events
+func (sender *Sender) add(event analyticsEvent) bool {
+	if event.eventCollection == "" {
+		// nil event, don't add
+		return false
 	}
+	sender.events[event.eventCollection] = append(sender.events[event.eventCollection], event.data)
+	sender.count++
+
+	if sender.count > send_threshold {
+		sender.send()
+	}
+	return true
 }
 
-func (ae *Sender) reset() {
-	ae.events = make(map[string][]interface{}, 10)
-	ae.count = 0
+// Reset the event map that's used to batch events
+func (sender *Sender) reset() {
+	sender.events = make(map[string][]interface{}, 10)
+	sender.count = 0
 }
 
-func (ae *Sender) send() {
-	// Send the events currently in ae.events
-	if ae.count == 0 {
+// Send the events currently in sender.events
+func (sender *Sender) send() {
+	if sender.count == 0 {
 		return
 	}
-	defer ae.reset()
+	// Whether we can send the events or not, we dump them before exiting this function
+	defer sender.reset()
 
 	// Convert data to JSON
-	data, err := json.Marshal(ae.events)
+	data, err := json.Marshal(sender.events)
 	if err != nil {
 		log.Printf("Couldn't marshal json for analytics. %v\n", err)
 		return
 	}
 
 	start := time.Now()
-	rsp, err := http.Post(ae.url, "application/json", strings.NewReader(string(data)))
+	rsp, err := http.Post(sender.url, "application/json", strings.NewReader(string(data)))
 	if err != nil {
 		log.Printf("Failed to post analytics events.  %v\n", err)
 		return
@@ -107,27 +128,34 @@ func (ae *Sender) send() {
 	}
 }
 
-func (ae *Sender) run() {
+func (sender *Sender) run() {
 	var event analyticsEvent
 
 	// Block for the first event, once we have one event we try to drain everthing left
-	for event = range ae.channel {
-		ae.add(event)
+	for event = range sender.channel {
+		sender.add(event)
 
 		// Select with a default case is essentially a non-blocking read from the channel
 	Loop:
 		for {
 			select {
-			case event = <-ae.channel:
+			case event = <-sender.channel:
 				// Add the event to those we are batching
-				ae.add(event)
+				if !sender.add(event) {
+					break Loop
+				}
 
 			default:
 				// Nothing to batch at present.  Send our events if we have any, then go back to block until something
 				// shows up
-				ae.send()
 				break Loop
 			}
 		}
+		// Send what we have batched
+		sender.send()
 	}
+
+	// Indicate that this thread is over
+	sender.done <- true
+	log.Printf("Analytics exited\n")
 }
