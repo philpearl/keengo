@@ -20,7 +20,7 @@ import (
 	"net/http"
 	"time"
 
-	"git.geekli.st/philpearl/keengo"
+	"github.com/philpearl/keengo"
 	"github.com/zenazn/goji/web"
 )
 
