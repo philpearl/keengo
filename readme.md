@@ -6,6 +6,8 @@ See https://github.com/philpearl/keengo_goji for Goji middleware that sends HTTP
 
 See the documentation at https://godoc.org/github.com/philpearl/keengo
 
+[![Build Status](https://travis-ci.org/philpearl/keengo.svg)](https://travis-ci.org/philpearl/keengo)
+
 ## Example
 
 ```golang
